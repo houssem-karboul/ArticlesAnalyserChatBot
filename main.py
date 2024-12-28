@@ -2,110 +2,81 @@ import os
 import streamlit as st
 import pickle
 import time
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
+from dotenv import load_dotenv
+from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
 from langchain.chains import RetrievalQAWithSourcesChain
-from langchain.text_splitter import RecursiveCharacterTextSplitter # type: ignore
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.document_loaders import UnstructuredURLLoader
 from langchain_community.vectorstores import FAISS
-from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
-from langchain.llms.openllm import OpenLLM
-from dotenv import load_dotenv
+# Load environment variables
+load_dotenv()
 
-load_dotenv()  # Load environment variables from .env file
+# Constants
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
+NVIDIA_EMBEDDINGS_API_KEY = os.getenv("NVIDIA_EMBEDDINGS_API_KEY")
+FAISS_STORE_PATH = "faiss_store_openai.pkl"
+MAX_URLS = 3
 
-# Use environment variables instead of hardcoded values
-nvidia_api_key = os.getenv("NVIDIA_API_KEY")
-nvidia_embeddings_api_key = os.getenv("NVIDIA_EMBEDDINGS_API_KEY")
-
-
+# Streamlit UI setup
 st.title("Articles Analyser ChatBot 📈")
 st.sidebar.title("Articles URLs")
 
-# store websites URLS
-
-urls = []
-
-# Articles websites Urls.
-
-for i in range(3):
-    url = st.sidebar.text_input(f"URL {i+1}")
-    urls.append(url)
-
-
+# Collect URLs
+urls = [st.sidebar.text_input(f"URL {i+1}") for i in range(MAX_URLS)]
 process_url_clicked = st.sidebar.button("Process URLs")
-file_path = "faiss_store_openai.pkl"
 
-# initilize llm model
+# Initialize main placeholder
 main_placeholder = st.empty()
 
+# Initialize LLM model
+llm = ChatNVIDIA(api_key=NVIDIA_API_KEY, model="mistralai/mixtral-8x22b-instruct-v0.1")
 
-
-llm=ChatNVIDIA(api_key=nvidia_api_key,
-               model="mistralai/mixtral-8x22b-instruct-v0.1") 
-
-if  process_url_clicked:
-
-    # load data
-    #loader = UnstructuredURLLoader(urls=urls, mode="elements",)
+def process_urls(urls):
+    # Load and process data
     loader = UnstructuredURLLoader(urls=urls, mode="elements", metadata_fn=lambda url: {"source": url})
     data = loader.load()
-    
     main_placeholder.text("Data Loading...Started...✅✅✅")
-    # split data
-    text_splitter = RecursiveCharacterTextSplitter(
-        separators=['\n\n', '\n', '.', ','],
-        chunk_size=3000
-    )
+
+    # Split text
+    text_splitter = RecursiveCharacterTextSplitter(separators=['\n\n', '\n', '.', ','], chunk_size=3000)
     main_placeholder.text("Text Splitter...Started...✅✅✅")
-    # docs = text_splitter.split_documents(data)
-    
     docs = text_splitter.split_documents(data)
 
+    # Ensure source metadata
     for doc in docs:
         if 'source' not in doc.metadata:
-            doc.metadata['source'] = doc.metadata['url']
-
+            doc.metadata['source'] = doc.metadata.get('url', 'Unknown')
 
     # Create embeddings
-
-    embeddings = NVIDIAEmbeddings(
-        nvidia_api_key=nvidia_embeddings_api_key,
-        model= "nvidia/nv-embedqa-e5-v5" # Specify the model explicitly
-    )
-
-
+    embeddings = NVIDIAEmbeddings(nvidia_api_key=NVIDIA_EMBEDDINGS_API_KEY, model="nvidia/nv-embedqa-e5-v5")
     vectorstore_openai = FAISS.from_documents(docs, embeddings)
     main_placeholder.text("Embedding Vector Started Building...✅✅✅")
-    time.sleep(2)
 
-    
-    for doc in docs:
-        if 'source' not in doc.metadata:
-            doc.metadata['source'] = 'Unknown'
-
-    # Save the FAISS index to a pickle file
-    with open(file_path, "wb") as f:
+    # Save FAISS index
+    with open(FAISS_STORE_PATH, "wb") as f:
         pickle.dump(vectorstore_openai, f)
 
-
-
-query = main_placeholder.text_input("Question: ")
-if query:
-    if os.path.exists(file_path):
-        with open(file_path, "rb") as f:
+def answer_query(query):
+    if os.path.exists(FAISS_STORE_PATH):
+        with open(FAISS_STORE_PATH, "rb") as f:
             vectorstore = pickle.load(f)
             chain = RetrievalQAWithSourcesChain.from_llm(llm=llm, retriever=vectorstore.as_retriever())
             result = chain({"question": query}, return_only_outputs=True)
-            # result will be a dictionary of this format --> {"answer": "", "sources": [] }
+            
             st.header("Answer")
             st.write(result["answer"])
 
-            # Display sources, if available
             sources = result.get("sources", "")
             if sources:
                 st.subheader("Sources:")
-                sources_list = sources.split("\n")  # Split the sources by newline
-                for source in sources_list:
+                for source in sources.split("\n"):
                     st.write(source)
+
+# Main execution
+if process_url_clicked:
+    process_urls(urls)
+
+query = main_placeholder.text_input("Question: ")
+if query:
+    answer_query(query)
